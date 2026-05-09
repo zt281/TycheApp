@@ -13,7 +13,8 @@ export default defineConfig({
       },
       rollupOptions: {
         external: ['zeromq']
-      }
+      },
+      watch: {}
     },
     resolve: {
       alias: {
@@ -29,7 +30,8 @@ export default defineConfig({
         entry: resolve('src/preload/index.ts'),
         formats: ['cjs'],
         fileName: () => '[name].js'
-      }
+      },
+      watch: {}
     }
   },
   renderer: {
@@ -40,6 +42,11 @@ export default defineConfig({
       }
     },
     plugins: [vue()],
+    server: {
+      hmr: {
+        overlay: false
+      }
+    },
     build: {
       rollupOptions: {
         input: {

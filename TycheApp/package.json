@@ -8,6 +8,7 @@
   "type": "module",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:inspect": "electron-vite dev --inspect=5858",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "dist": "electron-builder",

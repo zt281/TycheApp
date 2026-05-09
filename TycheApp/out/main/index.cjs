@@ -3,6 +3,7 @@ Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 const electron = require("electron");
 const node_url = require("node:url");
 const path = require("node:path");
+const fs = require("node:fs");
 const events = require("events");
 const zeromq = require("zeromq");
 const msgpack = require("@msgpack/msgpack");
@@ -149,6 +150,7 @@ class ConnectionManager extends events.EventEmitter {
     this.on("state-change", callback);
   }
 }
+const WINDOW_STATE_FILE = path.join(electron.app.getPath("userData"), "window-state.json");
 const __dirname$1 = path.dirname(node_url.fileURLToPath(require("url").pathToFileURL(__filename).href));
 process.env.APP_ROOT = path.join(__dirname$1, "../..");
 const MAIN_DIST = path.join(process.env.APP_ROOT, "dist-electron");
@@ -156,29 +158,93 @@ const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
 log.initialize();
+function saveWindowState(bounds) {
+  try {
+    fs.writeFileSync(WINDOW_STATE_FILE, JSON.stringify(bounds));
+  } catch (err) {
+    log.error("Failed to save window state:", err);
+  }
+}
+function loadWindowState() {
+  try {
+    const data = JSON.parse(fs.readFileSync(WINDOW_STATE_FILE, "utf-8"));
+    return data;
+  } catch {
+    return null;
+  }
+}
+function isWindowVisible(bounds) {
+  const displays = electron.screen.getAllDisplays();
+  return displays.some(
+    (d) => bounds.x < d.bounds.x + d.bounds.width && bounds.x + bounds.width > d.bounds.x && bounds.y < d.bounds.y + d.bounds.height && bounds.y + bounds.height > d.bounds.y
+  );
+}
+function resolvePreload() {
+  const base = path.join(__dirname$1, "../preload/index");
+  for (const ext of [".js", ".cjs", ".mjs"]) {
+    const p = base + ext;
+    if (fs.existsSync(p)) return p;
+  }
+  return base + ".js";
+}
 let mainWindow = null;
 let connection = null;
 function createWindow() {
-  mainWindow = new electron.BrowserWindow({
+  const saved = loadWindowState();
+  const primary = electron.screen.getPrimaryDisplay();
+  const workArea = primary.workAreaSize;
+  let opts = {
     width: 1600,
     height: 1e3,
     minWidth: 1200,
     minHeight: 700,
     title: "TycheApp",
     webPreferences: {
-      preload: path.join(__dirname$1, "../preload/index.js"),
+      preload: resolvePreload(),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      nativeWindowOpen: true
     }
-  });
+  };
+  if (saved && isWindowVisible(saved)) {
+    opts.width = saved.width || 1600;
+    opts.height = saved.height || 1e3;
+    opts.x = saved.x;
+    opts.y = saved.y;
+  } else {
+    opts.x = Math.round((workArea.width - 1600) / 2);
+    opts.y = Math.round((workArea.height - 1e3) / 2);
+  }
+  mainWindow = new electron.BrowserWindow(opts);
   const devUrl = process.env.ELECTRON_RENDERER_URL;
   if (devUrl) {
     mainWindow.loadURL(devUrl);
-    mainWindow.webContents.openDevTools();
+    mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
     mainWindow.loadFile(path.join(RENDERER_DIST, "index.html"));
   }
+  mainWindow.webContents.setWindowOpenHandler(({ frameName }) => {
+    return {
+      action: "allow",
+      overrideBrowserWindowOptions: {
+        width: 800,
+        height: 600,
+        title: frameName || "TycheApp",
+        webPreferences: {
+          preload: resolvePreload(),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: false
+        }
+      }
+    };
+  });
+  const onBoundsChange = () => {
+    if (mainWindow) saveWindowState(mainWindow.getBounds());
+  };
+  mainWindow.on("resize", onBoundsChange);
+  mainWindow.on("move", onBoundsChange);
   mainWindow.on("closed", () => {
     mainWindow = null;
   });

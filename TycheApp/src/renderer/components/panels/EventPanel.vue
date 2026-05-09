@@ -27,12 +27,23 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { computed } from 'vue'
 import { useEngineStore } from '../../store/engine'
+import { usePanelState } from '../../composables/usePanelState'
+
+const props = defineProps<{ params: any }>()
 
 const store = useEngineStore()
 const eventTypes = ['on', 'on_common', 'ack', 'whisper', 'broadcast', 'unknown']
-const selectedTypes = ref([...eventTypes])
+
+const state = usePanelState(props.params?.api, {
+  selectedTypes: [...eventTypes],
+})
+
+const selectedTypes = computed({
+  get: () => state.selectedTypes as string[],
+  set: (v) => { state.selectedTypes = v },
+})
 
 const filteredEvents = computed(() =>
   store.events.filter(e => selectedTypes.value.includes(e._type)).slice(-200)
