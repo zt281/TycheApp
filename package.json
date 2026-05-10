@@ -1,0 +1,61 @@
+{
+  "name": "tyche-app",
+  "version": "0.1.0",
+  "description": "Professional desktop GUI for TycheEngine",
+  "main": "./out/main/index.cjs",
+  "author": "zt281",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "dev:inspect": "electron-vite dev --inspect=5858",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "dist": "electron-builder",
+    "dist:dir": "electron-builder --dir",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "@msgpack/msgpack": "^3.1.1",
+    "dockview-vue": "^5.0.1",
+    "electron-log": "^5.4.0",
+    "pinia": "^3.0.2",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0",
+    "zeromq": "^6.4.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.4",
+    "electron": "^36.0.0",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^3.1.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vue-tsc": "^2.2.10"
+  },
+  "build": {
+    "appId": "com.tyche.app",
+    "productName": "TycheApp",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out"
+    ],
+    "mac": {
+      "target": [
+        "dmg"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    }
+  }
+}
