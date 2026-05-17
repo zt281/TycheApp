@@ -24,3 +24,20 @@ export interface ModuleInfo {
 }
 
 export type ConnectionState = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'RECONNECTING'
+
+export interface GreeksData {
+  instrument_id: string
+  underlying_id: string
+  underlying_price: number
+  strike: number
+  expiry: string
+  is_call: boolean
+  market_price: number
+  implied_vol: number
+  delta: number
+  gamma: number
+  vega: number
+  theta: number
+  rho: number
+  timestamp: string
+}

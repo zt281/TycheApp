@@ -16,10 +16,12 @@ import { DockviewVue } from 'dockview-vue'
 import type { DockviewReadyEvent } from 'dockview-vue'
 import { useEngineStore } from './store/engine'
 import { useLayoutStore } from './store/layout'
+import { useGreeksStore } from './store/greeks'
 import Toolbar from './components/Toolbar.vue'
 
 const store = useEngineStore()
 const layoutStore = useLayoutStore()
+const greeksStore = useGreeksStore()
 
 const isPopout = typeof window !== 'undefined' && window.location.search.includes('popout=1')
 const popoutUrl = typeof window !== 'undefined'
@@ -182,13 +184,24 @@ function onReset() {
   defaultLayout()
 }
 
-onMounted(() => {
+onMounted(async () => {
   if (isPopout) return
   if (typeof window !== 'undefined' && (window as any).api?.engine) {
     const api = (window as any).api.engine
+    // Sync current state in case auto-connect finished before listener registration
+    const currentState = await api.getState()
+    if (currentState) store.setState(currentState)
     api.onStateChange((s: any) => store.setState(s))
-    api.onEvent((e: any) => store.addEvent(e))
-    api.onHeartbeat(() => store.refreshModules())
+    api.onEvent((e: any) => {
+      store.addEvent(e)
+      if (e.event === 'greeks_update' && e.payload) {
+        greeksStore.processGreeksEvent(e.payload as Record<string, unknown>)
+      }
+    })
+    // Only update local heartbeat tracking — do NOT trigger admin queries
+    // on every heartbeat message (that would flood the REQ socket).
+    // Admin queries are polled on a timer in the main process instead.
+    api.onHeartbeat(() => {})
   }
 })
 </script>

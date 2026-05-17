@@ -3,60 +3,80 @@
     <div class="header">
       <h3>Volatility Surface</h3>
       <select v-model="selectedSymbol" class="symbol-select">
-        <option v-for="s in symbols" :key="s" :value="s">{{ s }}</option>
+        <option v-for="s in greeksStore.underlyings" :key="s" :value="s">{{ s }}</option>
       </select>
     </div>
 
     <div class="chart-area">
-      <svg viewBox="0 0 400 200" class="vol-chart">
-        <!-- Grid -->
-        <line x1="40" y1="10" x2="40" y2="170" stroke="#333" stroke-width="1" />
-        <line x1="40" y1="170" x2="390" y2="170" stroke="#333" stroke-width="1" />
+      <template v-if="curveData.length > 0">
+        <svg viewBox="0 0 400 200" class="vol-chart">
+          <!-- Grid -->
+          <line x1="40" y1="10" x2="40" y2="170" stroke="#333" stroke-width="1" />
+          <line x1="40" y1="170" x2="390" y2="170" stroke="#333" stroke-width="1" />
 
-        <!-- Y labels -->
-        <text v-for="(y, i) in yLabels" :key="i" x="35" :y="y.pos" text-anchor="end" fill="#666" font-size="9">{{ y.label }}</text>
+          <!-- Y labels -->
+          <text v-for="(y, i) in yLabels" :key="i" x="35" :y="y.pos" text-anchor="end" fill="#666" font-size="9">{{ y.label }}</text>
 
-        <!-- X labels -->
-        <text v-for="(x, i) in xLabels" :key="`x${i}`" :x="x.pos" y="185" text-anchor="middle" fill="#666" font-size="9">{{ x.label }}</text>
+          <!-- X labels -->
+          <text v-for="(x, i) in xLabels" :key="`x${i}`" :x="x.pos" y="185" text-anchor="middle" fill="#666" font-size="9">{{ x.label }}</text>
 
-        <!-- ATM line -->
-        <line :x1="atmX" y1="10" :x2="atmX" y2="170" stroke="#555" stroke-width="1" stroke-dasharray="4,4" />
+          <!-- ATM line -->
+          <line v-if="atmX !== null" :x1="atmX" y1="10" :x2="atmX" y2="170" stroke="#555" stroke-width="1" stroke-dasharray="4,4" />
 
-        <!-- Vol curve line -->
-        <polyline :points="curvePoints" fill="none" stroke="#4fc3f7" stroke-width="2" />
+          <!-- Vol curve line -->
+          <polyline :points="curvePoints" fill="none" stroke="#4fc3f7" stroke-width="2" />
 
-        <!-- Data points -->
-        <circle v-for="(p, i) in points" :key="i" :cx="p.x" :cy="p.y" r="3" fill="#4fc3f7" />
+          <!-- Data points -->
+          <circle v-for="(p, i) in chartPoints" :key="i" :cx="p.x" :cy="p.y" r="3" fill="#4fc3f7" />
 
-        <!-- Skew label -->
-        <text x="200" y="25" text-anchor="middle" fill="#aaa" font-size="10">
-          Skew: {{ skew.toFixed(2) }} | ATM IV: {{ atmIV.toFixed(1) }}%
-        </text>
-      </svg>
+          <!-- Skew label -->
+          <text x="200" y="25" text-anchor="middle" fill="#aaa" font-size="10">
+            Skew: {{ skew.toFixed(2) }} | ATM IV: {{ (atmIV * 100).toFixed(1) }}%
+          </text>
+        </svg>
+      </template>
+      <template v-else>
+        <div class="empty-state">Waiting for data...</div>
+      </template>
     </div>
 
     <div class="tenors">
-      <div v-for="t in tenorData" :key="t.tenor" class="tenor-row">
-        <span class="label">{{ t.tenor }}</span>
-        <div class="bar-track">
-          <div class="bar" :style="{ width: t.iv * 2 + '%', background: t.color }" />
+      <template v-if="ivDistribution.length > 0">
+        <div v-if="callContracts.length > 0" class="group-label">Call</div>
+        <div v-for="c in callContracts" :key="c.instrument_id" class="tenor-row">
+          <span class="label">{{ shortId(c.instrument_id) }}</span>
+          <div class="bar-track">
+            <div class="bar" :style="{ width: (c.implied_vol * 200) + '%', background: '#4fc3f7' }" />
+          </div>
+          <span class="val">{{ (c.implied_vol * 100).toFixed(1) }}%</span>
         </div>
-        <span class="val">{{ (t.iv * 100).toFixed(1) }}%</span>
-      </div>
+        <div v-if="putContracts.length > 0" class="group-label">Put</div>
+        <div v-for="c in putContracts" :key="c.instrument_id" class="tenor-row">
+          <span class="label">{{ shortId(c.instrument_id) }}</span>
+          <div class="bar-track">
+            <div class="bar" :style="{ width: (c.implied_vol * 200) + '%', background: '#ce93d8' }" />
+          </div>
+          <span class="val">{{ (c.implied_vol * 100).toFixed(1) }}%</span>
+        </div>
+      </template>
+      <template v-else>
+        <div class="empty-state">No contracts available</div>
+      </template>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { computed, watch } from 'vue'
 import { usePanelState } from '../../composables/usePanelState'
+import { useGreeksStore } from '../../store/greeks'
 
 const props = defineProps<{ params: any }>()
 
-const symbols = ['SPY', 'QQQ', 'AAPL', 'TSLA', 'NVDA']
+const greeksStore = useGreeksStore()
 
 const state = usePanelState(props.params?.api, {
-  selectedSymbol: 'SPY',
+  selectedSymbol: '',
 })
 
 const selectedSymbol = computed({
@@ -64,46 +84,151 @@ const selectedSymbol = computed({
   set: (v) => { state.selectedSymbol = v },
 })
 
-const points = ref([
-  { strike: 420, iv: 0.22, x: 60, y: 140 },
-  { strike: 430, iv: 0.20, x: 100, y: 120 },
-  { strike: 440, iv: 0.185, x: 140, y: 100 },
-  { strike: 450, iv: 0.175, x: 200, y: 85 },
-  { strike: 460, iv: 0.18, x: 260, y: 92 },
-  { strike: 470, iv: 0.195, x: 300, y: 108 },
-  { strike: 480, iv: 0.215, x: 340, y: 130 },
-])
-
-const atmX = 200
-const atmIV = 0.175
-const skew = -0.35
-
-const curvePoints = computed(() =>
-  points.value.map(p => `${p.x},${p.y}`).join(' ')
+// Auto-select first underlying when list changes or current selection becomes invalid
+watch(
+  () => greeksStore.underlyings,
+  (list) => {
+    if (list.length > 0 && !list.includes(selectedSymbol.value)) {
+      selectedSymbol.value = list[0]
+    }
+  },
+  { immediate: true }
 )
 
-const yLabels = [
-  { label: '25%', pos: 15 },
-  { label: '20%', pos: 55 },
-  { label: '15%', pos: 95 },
-  { label: '10%', pos: 135 },
-]
+// Current underlying's curve data (sorted by strike)
+const curveData = computed(() => {
+  if (!selectedSymbol.value) return []
+  return greeksStore.volCurveData[selectedSymbol.value] || []
+})
 
-const xLabels = [
-  { label: '420', pos: 60 },
-  { label: '440', pos: 140 },
-  { label: '450', pos: 200 },
-  { label: '460', pos: 260 },
-  { label: '480', pos: 340 },
-]
+// Chart constants
+const chartLeft = 40
+const chartRight = 390
+const chartTop = 10
+const chartBottom = 170
 
-const tenorData = [
-  { tenor: '7D', iv: 0.165, color: '#81c784' },
-  { tenor: '14D', iv: 0.172, color: '#aed581' },
-  { tenor: '30D', iv: 0.175, color: '#4fc3f7' },
-  { tenor: '60D', iv: 0.182, color: '#ff8a65' },
-  { tenor: '90D', iv: 0.195, color: '#ce93d8' },
-]
+function mapX(strike: number, minStrike: number, maxStrike: number): number {
+  if (maxStrike === minStrike) return (chartLeft + chartRight) / 2
+  return chartLeft + (strike - minStrike) / (maxStrike - minStrike) * (chartRight - chartLeft)
+}
+
+function mapY(iv: number, minIV: number, maxIV: number): number {
+  if (maxIV === minIV) return (chartTop + chartBottom) / 2
+  return chartBottom - (iv - minIV) / (maxIV - minIV) * (chartBottom - chartTop)
+}
+
+// Strike range
+const strikeRange = computed(() => {
+  if (curveData.value.length === 0) return { min: 0, max: 0 }
+  const strikes = curveData.value.map(d => d.strike)
+  return { min: Math.min(...strikes), max: Math.max(...strikes) }
+})
+
+// IV range
+const ivRange = computed(() => {
+  if (curveData.value.length === 0) return { min: 0, max: 0 }
+  const ivs = curveData.value.map(d => d.implied_vol)
+  const min = Math.min(...ivs)
+  const max = Math.max(...ivs)
+  // Add small padding
+  const pad = (max - min) * 0.1 || 0.01
+  return { min: Math.max(0, min - pad), max: max + pad }
+})
+
+// Chart points mapped to SVG coordinates
+const chartPoints = computed(() => {
+  const { min: minS, max: maxS } = strikeRange.value
+  const { min: minIV, max: maxIV } = ivRange.value
+  return curveData.value.map(d => ({
+    x: mapX(d.strike, minS, maxS),
+    y: mapY(d.implied_vol, minIV, maxIV),
+  }))
+})
+
+// Polyline points string
+const curvePoints = computed(() =>
+  chartPoints.value.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+)
+
+// ATM line X position
+const atmX = computed(() => {
+  if (curveData.value.length === 0) return null
+  const price = curveData.value[0].underlying_price
+  const { min: minS, max: maxS } = strikeRange.value
+  if (price < minS || price > maxS) return null
+  return mapX(price, minS, maxS)
+})
+
+// ATM IV: IV of the strike closest to underlying_price
+const atmIV = computed(() => {
+  if (curveData.value.length === 0) return 0
+  const price = curveData.value[0].underlying_price
+  let closest = curveData.value[0]
+  let minDist = Math.abs(closest.strike - price)
+  for (const d of curveData.value) {
+    const dist = Math.abs(d.strike - price)
+    if (dist < minDist) {
+      minDist = dist
+      closest = d
+    }
+  }
+  return closest.implied_vol
+})
+
+// Skew: lowest strike IV - highest strike IV
+const skew = computed(() => {
+  if (curveData.value.length < 2) return 0
+  const first = curveData.value[0].implied_vol
+  const last = curveData.value[curveData.value.length - 1].implied_vol
+  return first - last
+})
+
+// Y axis labels (4-5 evenly spaced)
+const yLabels = computed(() => {
+  const { min: minIV, max: maxIV } = ivRange.value
+  if (maxIV === minIV) return []
+  const steps = 4
+  const labels: { label: string; pos: number }[] = []
+  for (let i = 0; i <= steps; i++) {
+    const iv = minIV + (maxIV - minIV) * (i / steps)
+    const pos = mapY(iv, minIV, maxIV)
+    labels.push({ label: (iv * 100).toFixed(0) + '%', pos })
+  }
+  return labels
+})
+
+// X axis labels (up to 5 evenly spaced strikes)
+const xLabels = computed(() => {
+  const { min: minS, max: maxS } = strikeRange.value
+  if (maxS === minS) return []
+  const steps = Math.min(4, curveData.value.length - 1)
+  if (steps <= 0) return []
+  const labels: { label: string; pos: number }[] = []
+  for (let i = 0; i <= steps; i++) {
+    const strike = minS + (maxS - minS) * (i / steps)
+    const pos = mapX(strike, minS, maxS)
+    labels.push({ label: strike.toFixed(0), pos })
+  }
+  return labels
+})
+
+// Bottom section: IV distribution per contract
+const ivDistribution = computed(() => curveData.value)
+
+const callContracts = computed(() =>
+  curveData.value.filter(d => d.is_call).sort((a, b) => a.strike - b.strike)
+)
+
+const putContracts = computed(() =>
+  curveData.value.filter(d => !d.is_call).sort((a, b) => a.strike - b.strike)
+)
+
+// Shorten instrument_id for display
+function shortId(id: string): string {
+  // Take last segment or truncate
+  const parts = id.split(/[-_.]/)
+  return parts.length > 2 ? parts.slice(-2).join('-') : id.slice(-8)
+}
 </script>
 
 <style scoped>
@@ -177,5 +302,20 @@ h3 { margin: 0; font-size: 13px; }
   text-align: right;
   font-family: monospace;
   font-size: 11px;
+}
+.group-label {
+  font-size: 10px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 4px;
+}
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100px;
+  color: #666;
+  font-size: 12px;
 }
 </style>

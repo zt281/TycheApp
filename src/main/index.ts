@@ -132,6 +132,11 @@ app.on('ready', () => {
 
   connection = new ConnectionManager()
 
+  // Auto-connect to TycheEngine on startup
+  connection.connect().catch((err) => {
+    log.warn('[Main] Auto-connect to TycheEngine failed:', err)
+  })
+
   ipcMain.handle('engine:connect', async () => {
     if (!connection) return false
     await connection.connect()
@@ -150,8 +155,13 @@ app.on('ready', () => {
   })
 
   ipcMain.handle('engine:query-modules', async () => {
-    if (!connection) return []
+    if (!connection) return null
     return connection.queryModules()
+  })
+
+  ipcMain.handle('engine:get-state', async () => {
+    if (!connection) return null
+    return connection.getState()
   })
 
   connection.onEvent((data) => {

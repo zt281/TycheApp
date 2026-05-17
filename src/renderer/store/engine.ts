@@ -1,13 +1,29 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, shallowRef, triggerRef, computed } from 'vue'
 import type { EngineEvent, EngineStatus, ModuleInfo, ConnectionState } from '../types'
 
 export const useEngineStore = defineStore('engine', () => {
   const state = ref<ConnectionState>('DISCONNECTED')
   const status = ref<EngineStatus | null>(null)
   const modules = ref<ModuleInfo[]>([])
-  const events = ref<EngineEvent[]>([])
+  const events = shallowRef<EngineEvent[]>([])
   const maxEvents = 1000
+
+  // RAF 批处理缓冲区
+  let pendingEvents: EngineEvent[] = []
+  let eventRafScheduled = false
+
+  function flushEvents() {
+    eventRafScheduled = false
+    if (pendingEvents.length === 0) return
+    const arr = events.value
+    arr.push(...pendingEvents)
+    pendingEvents = []
+    if (arr.length > maxEvents) {
+      arr.splice(0, arr.length - maxEvents)
+    }
+    triggerRef(events)
+  }
 
   const isConnected = computed(() => state.value === 'CONNECTED')
 
@@ -24,13 +40,15 @@ export const useEngineStore = defineStore('engine', () => {
   }
 
   function addEvent(evt: EngineEvent) {
-    events.value.push(evt)
-    if (events.value.length > maxEvents) {
-      events.value = events.value.slice(-maxEvents)
+    pendingEvents.push(evt)
+    if (!eventRafScheduled) {
+      eventRafScheduled = true
+      requestAnimationFrame(flushEvents)
     }
   }
 
   function clearEvents() {
+    pendingEvents = []
     events.value = []
   }
 
@@ -48,11 +66,13 @@ export const useEngineStore = defineStore('engine', () => {
   }
 
   async function refreshStatus() {
-    status.value = await window.api.engine.queryStatus()
+    const result = await window.api.engine.queryStatus()
+    if (result) status.value = result
   }
 
   async function refreshModules() {
-    modules.value = await window.api.engine.queryModules()
+    const result = await window.api.engine.queryModules()
+    if (result) modules.value = result
   }
 
   return {

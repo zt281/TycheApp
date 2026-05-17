@@ -6,7 +6,8 @@ export interface PreloadAPI {
     connect: () => Promise<boolean>
     disconnect: () => Promise<boolean>
     queryStatus: () => Promise<EngineStatus | null>
-    queryModules: () => Promise<ModuleInfo[]>
+    queryModules: () => Promise<ModuleInfo[] | null>
+    getState: () => Promise<ConnectionState | null>
     onEvent: (callback: (data: EngineEvent & { _type: string }) => void) => () => void
     onHeartbeat: (callback: (moduleIds: string[]) => void) => () => void
     onStateChange: (callback: (state: ConnectionState) => void) => () => void
@@ -18,7 +19,8 @@ const api: PreloadAPI = {
     connect: () => ipcRenderer.invoke('engine:connect'),
     disconnect: () => ipcRenderer.invoke('engine:disconnect'),
     queryStatus: () => ipcRenderer.invoke('engine:query-status'),
-    queryModules: () => ipcRenderer.invoke('engine:query-modules'),
+    queryModules: () => ipcRenderer.invoke('engine:query-modules') as Promise<ModuleInfo[] | null>,
+    getState: () => ipcRenderer.invoke('engine:get-state'),
     onEvent: (callback) => {
       const handler = (_: unknown, data: EngineEvent & { _type: string }) => callback(data)
       ipcRenderer.on('engine:event', handler)

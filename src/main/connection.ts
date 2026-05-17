@@ -31,8 +31,10 @@ export interface ModuleInfo {
 
 const ENGINE_HOST = '127.0.0.1'
 const EVENT_PORT = 5556
-const HEARTBEAT_PORT = 5558
-const ADMIN_PORT = 5560
+const HEARTBEAT_PORT = 5559
+const ADMIN_PORT = 5558
+const ADMIN_TIMEOUT_MS = 5000
+const ADMIN_POLL_MS = 3000
 
 function classifyEvent(eventName: string): string {
   if (eventName.startsWith('on_common_')) return 'on_common'
@@ -40,6 +42,8 @@ function classifyEvent(eventName: string): string {
   if (eventName.startsWith('ack_')) return 'ack'
   if (eventName.startsWith('whisper_')) return 'whisper'
   if (eventName.startsWith('broadcast_')) return 'broadcast'
+  if (eventName.startsWith('handle_')) return 'handle'
+  if (eventName.startsWith('request_')) return 'request'
   return 'unknown'
 }
 
@@ -50,7 +54,11 @@ export class ConnectionManager extends EventEmitter {
   private adminSocket: Request | null = null
   private eventLoopRunning = false
   private heartbeatLoopRunning = false
+  private running = false
   private moduleHealth: Map<string, number> = new Map()
+  private adminTimer: ReturnType<typeof setInterval> | null = null
+  private failedPolls = 0
+  private readonly MAX_FAILED_POLLS = 3
 
   getState(): ConnectionState {
     return this.state
@@ -65,6 +73,7 @@ export class ConnectionManager extends EventEmitter {
   async connect(): Promise<void> {
     if (this.state === 'CONNECTED' || this.state === 'CONNECTING') return
     this.setState('CONNECTING')
+    this.running = true
 
     try {
       this.eventSocket = new Subscriber()
@@ -75,14 +84,23 @@ export class ConnectionManager extends EventEmitter {
       this.heartbeatSocket.connect(`tcp://${ENGINE_HOST}:${HEARTBEAT_PORT}`)
       this.heartbeatSocket.subscribe('')
 
-      this.adminSocket = new Request()
-      this.adminSocket.connect(`tcp://${ENGINE_HOST}:${ADMIN_PORT}`)
+      this.createAdminReq()
 
-      this.setState('CONNECTED')
-      log.info('[ConnectionManager] Connected to TycheEngine')
+      // NOTE: ZMQ socket.connect() does NOT verify peer reachability — it just
+      // registers the endpoint. We remain in CONNECTING until the first
+      // successful STATUS admin query, which acts as the real liveness probe.
 
       this.startEventLoop()
       this.startHeartbeatLoop()
+
+      // Kick off the first liveness probe immediately
+      this.pollAdmin().catch(() => { /* silent */ })
+
+      // Periodic admin polling (same pattern as TUI)
+      this.adminTimer = setInterval(() => {
+        this.pollAdmin().catch(() => { /* silent */ })
+      }, ADMIN_POLL_MS)
+
     } catch (err) {
       log.error('[ConnectionManager] Connect failed:', err)
       this.setState('DISCONNECTED')
@@ -91,8 +109,14 @@ export class ConnectionManager extends EventEmitter {
   }
 
   async disconnect(): Promise<void> {
+    this.running = false
     this.eventLoopRunning = false
     this.heartbeatLoopRunning = false
+
+    if (this.adminTimer) {
+      clearInterval(this.adminTimer)
+      this.adminTimer = null
+    }
 
     this.eventSocket?.close()
     this.heartbeatSocket?.close()
@@ -106,38 +130,130 @@ export class ConnectionManager extends EventEmitter {
     log.info('[ConnectionManager] Disconnected')
   }
 
-  async queryStatus(): Promise<EngineStatus | null> {
-    if (!this.adminSocket || this.state !== 'CONNECTED') return null
+  async reconnect(): Promise<void> {
     try {
-      await this.adminSocket.send(encode('STATUS'))
-      const [msg] = await this.adminSocket.receive()
-      return decode(msg) as EngineStatus
-    } catch (err) {
-      log.error('[ConnectionManager] queryStatus failed:', err)
+      this.setState('RECONNECTING')
+      await this.disconnect()
+      await new Promise((r) => setTimeout(r, 1000))
+      await this.connect()
+    } catch {
+      this.setState('DISCONNECTED')
+    }
+  }
+
+  // ── Admin Socket Management ──────────────────────────────────────
+
+  private createAdminReq(): void {
+    this.adminSocket = new Request()
+    this.adminSocket.connect(`tcp://${ENGINE_HOST}:${ADMIN_PORT}`)
+  }
+
+  /**
+   * After a REQ timeout the socket is stuck in WAITING_FOR_REPLY state and
+   * any further send() will fail. We must close and recreate it so subsequent
+   * admin queries can recover once the engine becomes reachable.
+   */
+  private async recreateAdminReq(): Promise<void> {
+    try {
+      await this.adminSocket?.close()
+    } catch { /* ignore */ }
+    this.adminSocket = null
+    if (this.running) this.createAdminReq()
+  }
+
+  private async sendAdmin(cmd: string): Promise<Record<string, unknown> | null> {
+    if (!this.adminSocket || !this.running) return null
+    try {
+      await this.adminSocket.send(encode(cmd))
+      const [reply] = await Promise.race([
+        this.adminSocket.receive(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Admin request timeout')), ADMIN_TIMEOUT_MS)
+        ),
+      ]) as [Buffer]
+      if (!reply) {
+        await this.recreateAdminReq()
+        return null
+      }
+      return decode(reply) as Record<string, unknown>
+    } catch {
+      await this.recreateAdminReq()
       return null
     }
   }
 
-  async queryModules(): Promise<ModuleInfo[]> {
-    if (!this.adminSocket || this.state !== 'CONNECTED') return []
-    try {
-      await this.adminSocket.send(encode('MODULES'))
-      const [msg] = await this.adminSocket.receive()
-      const raw = decode(msg) as Record<string, { interfaces: string[]; liveness: number }>
-      return Object.entries(raw).map(([id, info]) => {
-        const liveness = info.liveness ?? 0
-        return {
-          id,
-          interfaces: info.interfaces ?? [],
-          liveness,
-          status: liveness >= 2 ? 'OK' : liveness >= 1 ? 'WARN' : 'EXPIRED'
-        }
-      })
-    } catch (err) {
-      log.error('[ConnectionManager] queryModules failed:', err)
-      return []
+  // ── Periodic Admin Polling ────────────────────────────────────────
+
+  private async pollAdmin(): Promise<void> {
+    let pollFailed = false
+
+    const status = await this.queryStatus()
+    if (status) {
+      // First successful STATUS → we know the engine is alive
+      if (this.state !== 'CONNECTED') {
+        this.setState('CONNECTED')
+        log.info('[ConnectionManager] Connected to TycheEngine')
+      }
+    } else {
+      pollFailed = true
+      if (this.state === 'CONNECTED' || this.state === 'CONNECTING') {
+        this.setState('DISCONNECTED')
+      }
+    }
+
+    const mods = await this.queryModules()
+    if (mods === null) {
+      pollFailed = true
+    }
+
+    if (pollFailed) {
+      this.failedPolls++
+    } else {
+      this.failedPolls = 0
+    }
+
+    if (this.failedPolls >= this.MAX_FAILED_POLLS) {
+      this.failedPolls = 0
+      try {
+        await this.reconnect()
+      } catch {
+        // reconnect will set DISCONNECTED on failure
+      }
     }
   }
+
+  // ── Public Query Methods ──────────────────────────────────────────
+
+  async queryStatus(): Promise<EngineStatus | null> {
+    if (!this.adminSocket || !this.running) return null
+    const d = await this.sendAdmin('STATUS')
+    if (!d) return null
+    return {
+      uptime: Number(d.uptime ?? 0),
+      module_count: Number(d.module_count ?? 0),
+      event_count: Number(d.event_count ?? 0),
+    }
+  }
+
+  async queryModules(): Promise<ModuleInfo[] | null> {
+    if (!this.adminSocket || !this.running) return null
+    const d = await this.sendAdmin('MODULES')
+    if (!d) return null
+    const mods = (d as Record<string, unknown>).modules as Array<Record<string, unknown>> | undefined
+    if (!Array.isArray(mods)) return []
+
+    return mods.map((info) => {
+      const liveness = Number(info.liveness ?? 0)
+      return {
+        id: String(info.module_id ?? ''),
+        interfaces: Array.isArray(info.interfaces) ? info.interfaces.map(String) : [],
+        liveness,
+        status: liveness >= 2 ? 'OK' as const : liveness >= 1 ? 'WARN' as const : 'EXPIRED' as const,
+      }
+    })
+  }
+
+  // ── Event & Heartbeat Loops ───────────────────────────────────────
 
   private startEventLoop(): void {
     if (this.eventLoopRunning) return
@@ -146,10 +262,16 @@ export class ConnectionManager extends EventEmitter {
     ;(async () => {
       while (this.eventLoopRunning && this.eventSocket) {
         try {
-          const [msg] = await this.eventSocket.receive()
-          const data = decode(msg) as EngineEvent
-          data.event = data.event ?? ''
-          const classified = { ...data, _type: classifyEvent(data.event) }
+          const frames = await this.eventSocket.receive()
+          let data: Uint8Array
+          if (Array.isArray(frames)) {
+            data = frames[1] as Uint8Array
+          } else {
+            data = frames as Uint8Array
+          }
+          const evt = decode(data) as EngineEvent
+          evt.event = evt.event ?? ''
+          const classified = { ...evt, _type: classifyEvent(evt.event) }
           this.emit('event', classified)
         } catch (err) {
           if (this.eventLoopRunning) {
@@ -167,12 +289,19 @@ export class ConnectionManager extends EventEmitter {
     ;(async () => {
       while (this.heartbeatLoopRunning && this.heartbeatSocket) {
         try {
-          const [msg] = await this.heartbeatSocket.receive()
-          const moduleIds = decode(msg) as string[]
-          for (const id of moduleIds) {
-            this.moduleHealth.set(id, (this.moduleHealth.get(id) ?? 0) + 1)
+          const frames = await this.heartbeatSocket.receive()
+          let data: Uint8Array
+          if (Array.isArray(frames)) {
+            data = frames[1] as Uint8Array
+          } else {
+            data = frames as Uint8Array
           }
-          this.emit('heartbeat', moduleIds)
+          const decoded = decode(data) as Record<string, unknown>
+          const sender = String(decoded.sender ?? '')
+          if (sender) {
+            this.moduleHealth.set(sender, (this.moduleHealth.get(sender) ?? 0) + 1)
+            this.emit('heartbeat', [sender])
+          }
         } catch (err) {
           if (this.heartbeatLoopRunning) {
             log.error('[ConnectionManager] Heartbeat receive error:', err)
@@ -181,6 +310,8 @@ export class ConnectionManager extends EventEmitter {
       }
     })()
   }
+
+  // ── Event Registration ────────────────────────────────────────────
 
   onEvent(callback: (data: EngineEvent & { _type: string }) => void): void {
     this.on('event', callback)
